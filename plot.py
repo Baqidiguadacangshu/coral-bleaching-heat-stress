@@ -1,1112 +1,1714 @@
-import csv
 from pathlib import Path
-
+import csv
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from matplotlib.colors import to_rgb
+from matplotlib.collections import LineCollection
 
 
 # ============================================================
-# 1. FILE
+# A REEF LOSING ITS COLOR
+# NOAA Coral Reef Watch
+# ============================================================
+
+
+# ============================================================
+# DATA FILE
 # ============================================================
 
 DATA = Path(
-    "/Users/yangshuhan/Desktop/coral-bleaching-heat-stress/"
-    "data/noaa-bleaching-stress-extent-365d.csv"
+    "/Users/yangshuhan/Desktop/"
+    "coral-bleaching-heat-stress/data/"
+    "noaa-bleaching-stress-extent-365d.csv"
 )
 
 
 # ============================================================
-# 2. VISUAL SETTINGS
+# TIME
 # ============================================================
 
-BG = "#04151d"
+START_YEAR = 1986
+END_YEAR = 2026
 
-# Much stronger colour contrast
-DEEP_CORAL = np.array(to_rgb("#d7193f"))
-BRIGHT_CORAL = np.array(to_rgb("#ff493d"))
-ORANGE_CORAL = np.array(to_rgb("#ff8465"))
-SOFT_PINK = np.array(to_rgb("#efb4aa"))
-BONE_WHITE = np.array(to_rgb("#f5f1e8"))
+FPS = 24
+DURATION = 8
 
-np.random.seed(8)
+FRAMES = FPS * DURATION
 
 
 # ============================================================
-# 3. READ NOAA DATA
+# VISUAL DENSITY
 # ============================================================
 
-def read_data(path):
+N_STRANDS = 400
+POINTS = 170
+N_PARTICLES = 1400
 
-    years = []
-    global_values = []
-    pacific_values = []
-    atlantic_values = []
-    indian_values = []
+np.random.seed(18)
 
-    with open(path, newline="", encoding="utf-8-sig") as f:
+
+# ============================================================
+# COLORS
+# ============================================================
+
+BG = "#000000"
+TEXT = "#F1EEE8"
+
+
+# ============================================================
+# BASIC FUNCTIONS
+# ============================================================
+
+def clamp(x, a=0.0, b=1.0):
+    return max(a, min(b, x))
+
+
+def smoothstep(x):
+    x = clamp(x)
+    return x * x * (3.0 - 2.0 * x)
+
+
+def lerp(a, b, t):
+    return a * (1.0 - t) + b * t
+
+
+# ============================================================
+# READ NOAA DATA
+# ============================================================
+
+def read_noaa_data(path):
+
+    print("Reading NOAA data...")
+
+    raw_years = []
+    raw_values = []
+
+    with open(
+        path,
+        "r",
+        encoding="utf-8-sig"
+    ) as f:
 
         reader = csv.reader(f)
-
         header = next(reader)
-        header = [h.strip() for h in header]
 
-        year_i = header.index("Year")
-        global_i = header.index("Global %")
-        pacific_i = header.index("Pacific %")
-        atlantic_i = header.index("Atlantic %")
-        indian_i = header.index("Indian %")
+        year_index = None
+        global_index = None
+
+        for i, name in enumerate(header):
+
+            clean = name.strip().lower()
+
+            if clean == "year":
+                year_index = i
+
+            if clean == "global %":
+                global_index = i
+
+        if year_index is None:
+            raise ValueError(
+                "Could not find Year column."
+            )
+
+        if global_index is None:
+            raise ValueError(
+                "Could not find Global % column."
+            )
 
         for row in reader:
 
-            if not row:
-                continue
-
             try:
 
-                year = int(row[year_i].strip())
-
-                global_value = float(
-                    row[global_i].strip()
+                year = int(
+                    float(row[year_index])
                 )
 
-                pacific = float(
-                    row[pacific_i].strip()
+                value = float(
+                    row[global_index]
                 )
 
-                atlantic = float(
-                    row[atlantic_i].strip()
-                )
-
-                indian = float(
-                    row[indian_i].strip()
-                )
-
-            except (ValueError, IndexError):
+            except (
+                ValueError,
+                TypeError,
+                IndexError
+            ):
                 continue
 
-            years.append(year)
-            global_values.append(global_value)
-            pacific_values.append(pacific)
-            atlantic_values.append(atlantic)
-            indian_values.append(indian)
+            if START_YEAR <= year <= END_YEAR:
 
-    return (
-        np.array(years),
-        np.array(global_values),
-        np.array(pacific_values),
-        np.array(atlantic_values),
-        np.array(indian_values),
-    )
+                raw_years.append(year)
+                raw_values.append(value)
 
+    raw_years = np.array(raw_years)
+    raw_values = np.array(raw_values)
 
-# ============================================================
-# 4. YEARLY AVERAGE
-# ============================================================
+    if len(raw_years) == 0:
 
-def yearly_average(years, values):
-
-    unique_years = np.unique(years)
-
-    averages = []
-
-    for year in unique_years:
-
-        mask = years == year
-
-        averages.append(
-            np.nanmean(values[mask])
+        raise ValueError(
+            "No valid NOAA data found."
         )
 
-    return unique_years, np.array(averages)
+    years = []
+    values = []
+
+    # Daily data -> yearly average
+
+    for year in range(
+        START_YEAR,
+        END_YEAR + 1
+    ):
+
+        mask = raw_years == year
+
+        if np.any(mask):
+
+            years.append(year)
+
+            values.append(
+                np.nanmean(
+                    raw_values[mask]
+                )
+            )
+
+    years = np.array(
+        years,
+        dtype=float
+    )
+
+    values = np.array(
+        values,
+        dtype=float
+    )
+
+    print(
+        "NOAA DATA OK:",
+        int(years[0]),
+        "→",
+        int(years[-1])
+    )
+
+    print(
+        "Years loaded:",
+        len(years)
+    )
+
+    return years, values
 
 
 # ============================================================
-# 5. NORMALISE
+# NORMALIZE
 # ============================================================
 
 def normalize(values):
 
-    values = np.asarray(values, dtype=float)
+    lo = np.nanpercentile(
+        values,
+        5
+    )
 
-    # Percentiles stop one extreme year
-    # from flattening all other differences.
-    low = np.percentile(values, 3)
-    high = np.percentile(values, 97)
+    hi = np.nanpercentile(
+        values,
+        95
+    )
 
-    if high <= low:
+    if hi <= lo:
         return np.zeros_like(values)
 
     result = (
-        (values - low)
-        / (high - low)
+        values - lo
+    ) / (
+        hi - lo
     )
 
-    return np.clip(result, 0, 1)
-
-
-# ============================================================
-# 6. SMOOTH MORPH
-# ============================================================
-
-def ease(t):
-
-    """
-    Smoothstep interpolation.
-
-    Instead of:
-        A -> jump -> B
-
-    we get:
-        A -> gradual morph -> B
-    """
-
-    return t * t * (3 - 2 * t)
-
-
-def mix(a, b, t):
-
-    return (
-        a * (1 - t)
-        + b * t
+    return np.clip(
+        result,
+        0,
+        1
     )
 
 
 # ============================================================
-# 7. STRONG BLEACHING PALETTE
+# COLOR MAP
+#
+# IMPORTANT CHANGE:
+#
+# Low-stress colors now have much larger visual differences.
+# Small NOAA changes therefore remain visible.
 # ============================================================
 
-def bleaching_colour(stress):
+COLOR_STOPS = [
 
-    """
-    Strong colour contrast:
+    # stress, RGB
 
-    0.00  deep coral red
-    0.25  bright coral
-    0.50  orange coral
-    0.72  soft pink
-    1.00  bone white
-    """
+    (
+        0.00,
+        np.array([
+            0.68,
+            0.36,
+            0.34
+        ])
+    ),
 
-    stops = [
-        (0.00, DEEP_CORAL),
-        (0.25, BRIGHT_CORAL),
-        (0.50, ORANGE_CORAL),
-        (0.72, SOFT_PINK),
-        (1.00, BONE_WHITE),
-    ]
+    # warmer coral
 
-    for i in range(len(stops) - 1):
+    (
+        0.10,
+        np.array([
+            0.77,
+            0.43,
+            0.37
+        ])
+    ),
 
-        p1, c1 = stops[i]
-        p2, c2 = stops[i + 1]
+    # orange coral
 
-        if p1 <= stress <= p2:
+    (
+        0.20,
+        np.array([
+            0.85,
+            0.51,
+            0.42
+        ])
+    ),
 
-            local_t = (
-                (stress - p1)
-                / (p2 - p1)
+    # light coral
+
+    (
+        0.30,
+        np.array([
+            0.91,
+            0.61,
+            0.51
+        ])
+    ),
+
+    # pale pink
+
+    (
+        0.50,
+        np.array([
+            0.93,
+            0.70,
+            0.65
+        ])
+    ),
+
+    # strongly bleached
+
+    (
+        0.70,
+        np.array([
+            0.95,
+            0.81,
+            0.76
+        ])
+    ),
+
+    # warm ivory
+
+    (
+        1.00,
+        np.array([
+            0.97,
+            0.93,
+            0.87
+        ])
+    )
+]
+
+
+# ============================================================
+# GET COLOR
+# ============================================================
+
+def get_color(stress):
+
+    stress = clamp(stress)
+
+    for i in range(
+        len(COLOR_STOPS) - 1
+    ):
+
+        s1, c1 = COLOR_STOPS[i]
+        s2, c2 = COLOR_STOPS[i + 1]
+
+        if s1 <= stress <= s2:
+
+            t = (
+                stress - s1
+            ) / (
+                s2 - s1
             )
 
-            return mix(
+            t = smoothstep(t)
+
+            return lerp(
                 c1,
                 c2,
-                local_t
+                t
             )
 
-    return BONE_WHITE
+    return COLOR_STOPS[-1][1]
 
 
 # ============================================================
-# 8. CREATE COMPLEX ORGANIC BODY
+# PRECOMPUTED GEOMETRY
 # ============================================================
 
-def reef_geometry(
-    stress,
-    pacific,
-    atlantic,
-    indian,
-    layer,
-    motion
+theta = np.linspace(
+    0,
+    2 * np.pi,
+    POINTS
+)
+
+layers = np.linspace(
+    0,
+    1,
+    N_STRANDS
+)
+
+THETA = theta[None, :]
+LAYER = layers[:, None]
+
+FIBRE_PHASE = (
+    np.arange(
+        N_STRANDS
+    )[:, None]
+    * 0.081
+)
+
+
+# ============================================================
+# IMPORTANT:
+# Each strand receives a permanent individual identity.
+#
+# This lets different fibres bleach at slightly different
+# moments rather than the whole coral changing at once.
+# ============================================================
+
+rng = np.random.default_rng(27)
+
+strand_variation = rng.normal(
+    0,
+    0.055,
+    N_STRANDS
+)
+
+strand_bleach_threshold = rng.uniform(
+    0.25,
+    0.90,
+    N_STRANDS
+)
+
+strand_brightness = rng.uniform(
+    0.88,
+    1.12,
+    N_STRANDS
+)
+
+
+# ============================================================
+# CREATE CORAL FIBRES
+# ============================================================
+
+def create_all_strands(
+    time,
+    stress
 ):
-
-    theta = np.linspace(
-        0,
-        2 * np.pi,
-        900
-    )
 
     # --------------------------------------------------------
     # MAIN BODY
     # --------------------------------------------------------
 
-    # Large folds
-    large_fold = (
-        0.25
+    body = (
+
+        1.0
+
+        + 0.17
         * np.sin(
-            theta
-            * (
-                2.5
-                + pacific * 2.5
-            )
-            + 0.8
+            5.0 * THETA
+            +
+            time * 0.75
+        )
+
+        + 0.095
+        * np.sin(
+            8.0 * THETA
+            -
+            time * 0.52
+        )
+
+        + 0.050
+        * np.sin(
+            13.0 * THETA
+            +
+            time * 0.65
+        )
+
+        + 0.025
+        * np.sin(
+            21.0 * THETA
+            -
+            time * 0.46
         )
     )
 
-    # Medium folds
-    medium_fold = (
-        0.15
-        * np.sin(
-            theta
-            * (
-                4.5
-                + atlantic * 3.5
-            )
-            - 1.2
-        )
-    )
-
-    # Fine folds
-    fine_fold = (
-        0.08
-        * np.cos(
-            theta
-            * (
-                8
-                + indian * 5
-            )
-            + 0.5
-        )
-    )
-
-    # Small organic irregularities
-    micro_fold = (
-        0.035
-        * np.sin(
-            theta * 13
-            + layer * 4
-        )
-    )
 
     # --------------------------------------------------------
-    # DATA-DRIVEN COLLAPSE
+    # LAYERS
     # --------------------------------------------------------
 
-    # Higher heat stress makes selected regions
-    # collapse more strongly than others.
+    layer_radius = (
+        0.34
+        +
+        0.64 * LAYER
+    )
 
-    collapse_pattern = (
-        1
-        - stress
+
+    # --------------------------------------------------------
+    # DATA-DRIVEN CONTRACTION
+    # --------------------------------------------------------
+
+    contraction = (
+        1.0
+        -
+        0.22 * stress
+    )
+
+    radius = (
+        layer_radius
+        *
+        body
+        *
+        contraction
+    )
+
+
+    # --------------------------------------------------------
+    # BREATHING
+    # --------------------------------------------------------
+
+    breathing = (
+
+        1.0
+
+        + 0.030
+
+        * np.sin(
+            time * 2.4
+            +
+            THETA * 2.5
+            +
+            FIBRE_PHASE * 0.08
+        )
+    )
+
+    radius *= breathing
+
+
+    # --------------------------------------------------------
+    # FINE FIBRE MOTION
+    # --------------------------------------------------------
+
+    fine_wave = (
+
+        0.012
+
+        * np.sin(
+            THETA * 10.0
+            +
+            time * 1.8
+            +
+            FIBRE_PHASE
+        )
+    )
+
+    radius += fine_wave
+
+
+    # --------------------------------------------------------
+    # HEAT STRESS DISTORTION
+    # --------------------------------------------------------
+
+    radius += (
+
+        stress
+
+        * 0.052
+
+        * np.sin(
+            THETA * 11
+            +
+            time * 2.0
+            +
+            FIBRE_PHASE * 0.15
+        )
+    )
+
+
+    radius += (
+
+        stress
+
+        * 0.025
+
+        * np.sin(
+            THETA * 19
+            -
+            time * 1.5
+            +
+            FIBRE_PHASE * 0.10
+        )
+    )
+
+
+    # --------------------------------------------------------
+    # TWIST
+    # --------------------------------------------------------
+
+    twist = (
+
+        (LAYER - 0.5)
+
         * (
-            0.12
-            + 0.16
-            * (
-                0.5
-                + 0.5
-                * np.sin(
-                    theta * 3 - 0.8
-                )
+            0.48
+
+            + 0.10
+
+            * np.sin(
+                time * 0.9
             )
         )
     )
 
-    r = (
-        1
-        + large_fold
-        + medium_fold
-        + fine_fold
-        + micro_fold
-    )
 
-    r *= collapse_pattern
+    angle = (
 
-    # --------------------------------------------------------
-    # INNER / OUTER LAYER
-    # --------------------------------------------------------
+        THETA
 
-    scale = (
-        0.16
-        + layer * 0.84
-    )
+        + twist
 
-    r *= scale
-
-    # --------------------------------------------------------
-    # VERY SUBTLE CONTINUOUS MOTION
-    # --------------------------------------------------------
-
-    # This prevents the object feeling frozen,
-    # but the main morph still comes from NOAA data.
-
-    r += (
-        0.008
         * np.sin(
-            theta * 4
-            + motion
+            THETA * 3
+            +
+            time * 0.85
         )
-        * layer
     )
+
 
     # --------------------------------------------------------
     # XY
     # --------------------------------------------------------
 
     x = (
-        np.cos(theta)
-        * r
-        * 1.12
+        radius
+        *
+        np.cos(angle)
     )
 
     y = (
-        np.sin(theta)
-        * r
-        * 0.82
+        radius
+        *
+        np.sin(angle)
     )
 
-    # Fold / fabric distortion
+
+    # --------------------------------------------------------
+    # ASYMMETRY
+    # --------------------------------------------------------
+
     x += (
-        0.055
+
+        0.065
+
         * np.sin(
-            y * 4
-            + layer * 2.5
+            THETA * 2
+            +
+            time * 0.65
         )
-        * (1 - stress * 0.35)
     )
+
 
     y += (
-        0.035
+
+        0.045
+
         * np.sin(
-            x * 5
-            - layer * 3
+            THETA * 3
+            -
+            time * 0.55
         )
     )
 
-    return theta, x, y
+
+    x *= 1.28
+    y *= 0.88
+
+
+    return x, y
 
 
 # ============================================================
-# 9. LOCAL BLEACHING
+# PARTICLES
 # ============================================================
 
-def local_colour(
-    theta,
-    global_stress,
-    region_shift
-):
+particle_theta = np.random.uniform(
+    0,
+    2 * np.pi,
+    N_PARTICLES
+)
 
-    """
-    The whole coral does NOT become white at once.
+particle_radius = np.random.uniform(
+    0.83,
+    1.72,
+    N_PARTICLES
+)
 
-    Different areas bleach at slightly different rates.
-    """
+particle_phase = np.random.uniform(
+    0,
+    2 * np.pi,
+    N_PARTICLES
+)
 
-    local_pattern = (
-        0.22
-        * np.sin(
-            theta * 2.2
-            + region_shift
-        )
-        + 0.12
-        * np.sin(
-            theta * 5.3
-            - 0.5
-        )
-    )
+particle_speed = np.random.uniform(
+    0.30,
+    1.20,
+    N_PARTICLES
+)
 
-    local_stress = (
-        global_stress
-        + local_pattern
-        * global_stress
-    )
+particle_size = np.random.uniform(
+    2.0,
+    8.0,
+    N_PARTICLES
+)
 
-    return np.clip(
-        local_stress,
-        0,
-        1
-    )
+particle_brightness = np.random.uniform(
+    0.40,
+    1.0,
+    N_PARTICLES
+)
 
 
 # ============================================================
-# 10. DRAW COMPLEX REEF
+# MAIN
 # ============================================================
 
-def draw_reef(
-    ax,
-    stress,
-    pacific,
-    atlantic,
-    indian,
-    motion
-):
+def main():
 
-    # High stress removes some visual density.
-    layer_count = int(
-        95 - stress * 28
+    # ========================================================
+    # DATA
+    # ========================================================
+
+    years, raw_values = read_noaa_data(
+        DATA
     )
+
+    stress_values = normalize(
+        raw_values
+    )
+
 
     # --------------------------------------------------------
-    # CONTOUR LAYERS
+    # Print yearly values so you can see the data relationship
     # --------------------------------------------------------
 
-    for layer_index in range(
-        layer_count
+    print("\nYEAR / STRESS")
+
+    for y, raw, s in zip(
+        years,
+        raw_values,
+        stress_values
     ):
 
-        layer = (
-            layer_index
-            / max(
-                1,
-                layer_count - 1
-            )
+        print(
+            int(y),
+            "raw:",
+            round(raw, 4),
+            "normalized:",
+            round(s, 3)
         )
 
-        theta, x, y = reef_geometry(
-            stress,
-            pacific,
-            atlantic,
-            indian,
-            layer,
-            motion
-        )
 
-        # Break each contour into segments
-        # so different areas can bleach independently.
+    # ========================================================
+    # FRAME DATA
+    # ========================================================
 
-        local_stress = local_colour(
-            theta,
-            stress,
-            layer * 3
-        )
-
-        # Draw in chunks
-        chunk = 12
-
-        for start in range(
-            0,
-            len(theta) - chunk,
-            chunk
-        ):
-
-            end = start + chunk + 1
-
-            chunk_stress = np.mean(
-                local_stress[start:end]
-            )
-
-            colour = bleaching_colour(
-                chunk_stress
-            )
-
-            # Severe stress also makes some areas
-            # visually disappear.
-
-            disappearance = (
-                stress
-                * chunk_stress
-            )
-
-            alpha = (
-                0.025
-                + layer * 0.22
-            )
-
-            alpha *= (
-                1
-                - disappearance * 0.45
-            )
-
-            ax.plot(
-                x[start:end],
-                y[start:end],
-                color=colour,
-                alpha=alpha,
-                linewidth=(
-                    0.28
-                    + layer * 0.50
-                ),
-                solid_capstyle="round",
-                solid_joinstyle="round",
-            )
-
-
-    # --------------------------------------------------------
-    # FLOW LINES
-    # --------------------------------------------------------
-
-    # Additional lines give the form more depth
-    # and stop it looking like simple concentric rings.
-
-    flow_count = int(
-        30 - stress * 8
+    frame_years = np.linspace(
+        START_YEAR,
+        END_YEAR,
+        FRAMES
     )
 
-    for k in range(flow_count):
+    frame_stress = np.interp(
+        frame_years,
+        years,
+        stress_values
+    )
 
-        t = (
-            k
-            / max(
-                1,
-                flow_count - 1
+    frame_raw = np.interp(
+        frame_years,
+        years,
+        raw_values
+    )
+
+
+    # ========================================================
+    # FIGURE
+    # ========================================================
+
+    fig = plt.figure(
+        figsize=(16, 9),
+        facecolor=BG
+    )
+
+    ax = fig.add_axes([
+        0,
+        0,
+        1,
+        1
+    ])
+
+    ax.set_facecolor(BG)
+
+    ax.set_xlim(
+        -1.72,
+        1.72
+    )
+
+    ax.set_ylim(
+        -1.08,
+        1.08
+    )
+
+    ax.axis("off")
+
+
+    # ========================================================
+    # TITLE
+    # ========================================================
+
+    ax.text(
+        0.045,
+        0.925,
+        "A REEF LOSING ITS COLOR",
+        transform=ax.transAxes,
+        color=TEXT,
+        fontsize=26,
+        fontweight="bold",
+        ha="left",
+        va="top"
+    )
+
+
+    ax.text(
+        0.045,
+        0.883,
+        "NOAA Coral Reef Watch · Global Bleaching Heat Stress",
+        transform=ax.transAxes,
+        color="#777777",
+        fontsize=9,
+        ha="left",
+        va="top"
+    )
+
+
+    ax.text(
+        0.045,
+        0.858,
+        "1986 — 2026",
+        transform=ax.transAxes,
+        color="#555555",
+        fontsize=7,
+        ha="left",
+        va="top"
+    )
+
+
+    # ========================================================
+    # YEAR / DATA
+    # ========================================================
+
+    year_text = ax.text(
+        0.955,
+        0.925,
+        "",
+        transform=ax.transAxes,
+        color=TEXT,
+        fontsize=30,
+        fontweight="bold",
+        ha="right",
+        va="top"
+    )
+
+
+    stress_text = ax.text(
+        0.955,
+        0.878,
+        "",
+        transform=ax.transAxes,
+        color="#777777",
+        fontsize=8,
+        ha="right",
+        va="top"
+    )
+
+
+    # ========================================================
+    # PARTICLES
+    # ========================================================
+
+    particles = ax.scatter(
+        np.zeros(
+            N_PARTICLES
+        ),
+        np.zeros(
+            N_PARTICLES
+        ),
+        s=particle_size,
+        linewidths=0,
+        zorder=2
+    )
+
+
+    # ========================================================
+    # FIBRES
+    # ========================================================
+
+    empty_segments = [
+
+        np.zeros(
+            (
+                POINTS,
+                2
             )
         )
 
-        theta = np.linspace(
-            -2.3,
-            2.3,
-            450
+        for _ in range(
+            N_STRANDS
         )
+    ]
 
-        radius = (
-            0.22
-            + t * 0.68
-        )
 
-        x = (
-            radius
-            * np.cos(theta)
-        )
+    fibre_collection = LineCollection(
+        empty_segments,
+        linewidths=0.45,
+        zorder=5
+    )
 
-        y = (
-            radius
-            * np.sin(theta)
-            * 0.72
-        )
+    ax.add_collection(
+        fibre_collection
+    )
 
-        x += (
-            0.17
-            * np.sin(
-                theta * 2.1
-                + t * 5
-                + pacific
+
+    # ========================================================
+    # GLOW / OUTER
+    # ========================================================
+
+    glow, = ax.plot(
+        [],
+        [],
+        linewidth=5.0,
+        alpha=0.035,
+        zorder=3
+    )
+
+
+    outer, = ax.plot(
+        [],
+        [],
+        linewidth=1.1,
+        alpha=0.78,
+        zorder=7
+    )
+
+
+    # ========================================================
+    # INFORMATION
+    # ========================================================
+
+    ax.text(
+        0.045,
+        0.105,
+        "COLOR",
+        transform=ax.transAxes,
+        color=TEXT,
+        fontsize=7,
+        fontweight="bold"
+    )
+
+    ax.text(
+        0.045,
+        0.085,
+        "NOAA heat stress → fibre color",
+        transform=ax.transAxes,
+        color="#666666",
+        fontsize=6
+    )
+
+
+    ax.text(
+        0.215,
+        0.105,
+        "FORM",
+        transform=ax.transAxes,
+        color=TEXT,
+        fontsize=7,
+        fontweight="bold"
+    )
+
+    ax.text(
+        0.215,
+        0.085,
+        "400 flowing fibres",
+        transform=ax.transAxes,
+        color="#666666",
+        fontsize=6
+    )
+
+
+    ax.text(
+        0.365,
+        0.105,
+        "PARTICLES",
+        transform=ax.transAxes,
+        color=TEXT,
+        fontsize=7,
+        fontweight="bold"
+    )
+
+    ax.text(
+        0.365,
+        0.085,
+        "Stress-driven dispersion",
+        transform=ax.transAxes,
+        color="#666666",
+        fontsize=6
+    )
+
+
+    # ========================================================
+    # COLOR LEGEND
+    # ========================================================
+
+    legend_x1 = 0.69
+    legend_x2 = 0.955
+    legend_y = 0.090
+
+    legend_steps = 100
+
+    for j in range(
+        legend_steps
+    ):
+
+        s = (
+            j
+            /
+            (
+                legend_steps - 1
             )
         )
 
-        y += (
-            0.10
-            * np.sin(
-                theta * 3.2
-                - t * 4
-                + atlantic
+        c = get_color(s)
+
+        x1 = (
+            legend_x1
+            +
+            (
+                legend_x2
+                -
+                legend_x1
+            )
+            *
+            j
+            /
+            legend_steps
+        )
+
+        x2 = (
+            legend_x1
+            +
+            (
+                legend_x2
+                -
+                legend_x1
+            )
+            *
+            (
+                j + 1
+            )
+            /
+            legend_steps
+        )
+
+        ax.plot(
+            [x1, x2],
+            [legend_y, legend_y],
+            transform=ax.transAxes,
+            color=c,
+            linewidth=3
+        )
+
+
+    ax.text(
+        legend_x1,
+        0.108,
+        "LOW STRESS",
+        transform=ax.transAxes,
+        color="#777777",
+        fontsize=5,
+        ha="left"
+    )
+
+
+    ax.text(
+        legend_x2,
+        0.108,
+        "HIGH STRESS / BLEACHED",
+        transform=ax.transAxes,
+        color="#999999",
+        fontsize=5,
+        ha="right"
+    )
+
+
+    # ========================================================
+    # TIMELINE
+    # ========================================================
+
+    timeline_y = 0.055
+
+
+    ax.plot(
+        [0.045, 0.955],
+        [timeline_y, timeline_y],
+        transform=ax.transAxes,
+        color="#292929",
+        linewidth=0.8
+    )
+
+
+    ax.text(
+        0.045,
+        0.027,
+        "1986",
+        transform=ax.transAxes,
+        color="#555555",
+        fontsize=6,
+        ha="left"
+    )
+
+
+    ax.text(
+        0.955,
+        0.027,
+        "2026",
+        transform=ax.transAxes,
+        color="#555555",
+        fontsize=6,
+        ha="right"
+    )
+
+
+    timeline_dot, = ax.plot(
+        [],
+        [],
+        marker="o",
+        markersize=4.5,
+        linestyle="None",
+        transform=ax.transAxes,
+        zorder=20
+    )
+
+
+    # ========================================================
+    # UPDATE
+    # ========================================================
+
+    def update(frame):
+
+        animation_time = (
+            frame / FPS
+        )
+
+
+        current_year = (
+            frame_years[frame]
+        )
+
+
+        current_stress = (
+            frame_stress[frame]
+        )
+
+
+        current_raw = (
+            frame_raw[frame]
+        )
+
+
+        # ====================================================
+        # IMPORTANT COLOR RESPONSE
+        #
+        # Gamma < 1 expands differences in LOW stress.
+        #
+        # Data is NOT changed.
+        # Only its visual mapping is nonlinear.
+        # ====================================================
+
+        visual_stress = (
+            current_stress
+            ** 0.62
+        )
+
+
+        visual_stress = clamp(
+            visual_stress
+        )
+
+
+        base_color = get_color(
+            visual_stress
+        )
+
+
+        # ====================================================
+        # GEOMETRY
+        # ====================================================
+
+        x, y = create_all_strands(
+            animation_time,
+            current_stress
+        )
+
+
+        segments = np.stack(
+            [
+                x,
+                y
+            ],
+            axis=2
+        )
+
+
+        fibre_collection.set_segments(
+            segments
+        )
+
+
+        # ====================================================
+        # INDIVIDUAL FIBRE COLORS
+        # ====================================================
+
+        fibre_colors = np.zeros(
+            (
+                N_STRANDS,
+                4
             )
         )
 
-        # rotate each family of lines
-        angle = (
-            0.5
-            + t * 1.7
-            + indian * 0.3
+
+        depth = (
+            np.sin(
+                layers * np.pi
+            )
+            ** 1.15
         )
 
-        xr = (
-            x * np.cos(angle)
-            - y * np.sin(angle)
+
+        # ----------------------------------------------------
+        # Each fibre gets a slightly different stress value.
+        #
+        # This creates multiple shades inside the coral.
+        # ----------------------------------------------------
+
+        individual_stress = (
+
+            visual_stress
+
+            + strand_variation
         )
 
-        yr = (
-            x * np.sin(angle)
-            + y * np.cos(angle)
+
+        individual_stress = np.clip(
+            individual_stress,
+            0,
+            1
         )
 
-        colour = bleaching_colour(
+
+        # ----------------------------------------------------
+        # Progressive bleaching
+        #
+        # As stress rises, more individual fibres are pushed
+        # toward pale colors.
+        # ----------------------------------------------------
+
+        bleaching_amount = np.clip(
+
+            (
+                visual_stress
+                -
+                strand_bleach_threshold
+            )
+            * 2.2,
+
+            0,
+            1
+        )
+
+
+        individual_stress = np.clip(
+
+            individual_stress
+
+            + bleaching_amount
+            * 0.25,
+
+            0,
+            1
+        )
+
+
+        # ----------------------------------------------------
+        # Calculate every strand's own color
+        # ----------------------------------------------------
+
+        for i in range(
+            N_STRANDS
+        ):
+
+            c = get_color(
+                individual_stress[i]
+            )
+
+
+            # small brightness variation
+
+            c = np.clip(
+
+                c
+                *
+                strand_brightness[i],
+
+                0,
+                1
+            )
+
+
+            # preserve depth
+
+            depth_brightness = (
+                0.78
+                +
+                0.22
+                * depth[i]
+            )
+
+
+            c *= (
+                depth_brightness
+            )
+
+
+            fibre_colors[
+                i,
+                :3
+            ] = np.clip(
+                c,
+                0,
+                1
+            )
+
+
+        # ====================================================
+        # ALPHA
+        # ====================================================
+
+        alpha = (
+            0.11
+            +
+            0.28
+            * depth
+        )
+
+
+        highlight = (
+            np.arange(
+                N_STRANDS
+            )
+            % 8
+            == 0
+        )
+
+
+        alpha[
+            highlight
+        ] += 0.11
+
+
+        fibre_colors[:, 3] = np.clip(
+            alpha,
+            0,
+            1
+        )
+
+
+        fibre_collection.set_color(
+            fibre_colors
+        )
+
+
+        # ====================================================
+        # LINE WIDTH
+        # ====================================================
+
+        widths = (
+            0.28
+            +
+            0.34
+            * depth
+        )
+
+
+        widths[
+            highlight
+        ] += 0.18
+
+
+        fibre_collection.set_linewidths(
+            widths
+        )
+
+
+        # ====================================================
+        # OUTER EDGE
+        # ====================================================
+
+        ox = x[-1]
+        oy = y[-1]
+
+
+        outer.set_data(
+            ox,
+            oy
+        )
+
+
+        outer.set_color(
             np.clip(
-                stress
-                + 0.12
-                * np.sin(t * np.pi),
+                base_color
+                * 1.12,
                 0,
                 1
             )
         )
 
-        ax.plot(
-            xr,
-            yr,
-            color=colour,
-            alpha=(
-                0.08
+
+        glow.set_data(
+            ox,
+            oy
+        )
+
+
+        glow.set_color(
+            base_color
+        )
+
+
+        # ====================================================
+        # PARTICLES
+        # ====================================================
+
+        p_angle = (
+
+            particle_theta
+
+            + animation_time
+            * particle_speed
+            * 0.15
+        )
+
+
+        stress_drift = (
+
+            current_stress
+
+            * (
+                0.15
+
+                + 0.40
+
                 * (
-                    1 - stress * 0.4
+                    0.5
+
+                    + 0.5
+
+                    * np.sin(
+                        particle_phase
+
+                        + animation_time
+
+                        * particle_speed
+
+                        * 1.6
+                    )
                 )
+            )
+        )
+
+
+        pulse = (
+
+            0.05
+
+            * np.sin(
+                particle_phase
+
+                + animation_time
+
+                * particle_speed
+
+                * 1.8
+            )
+        )
+
+
+        pr = (
+
+            particle_radius
+
+            + stress_drift
+
+            + pulse
+        )
+
+
+        px = (
+
+            pr
+
+            * np.cos(
+                p_angle
+            )
+
+            * 1.25
+        )
+
+
+        py = (
+
+            pr
+
+            * np.sin(
+                p_angle
+            )
+
+            * 0.80
+        )
+
+
+        px += (
+
+            0.035
+
+            * np.sin(
+                animation_time
+
+                * particle_speed
+
+                * 1.4
+
+                + particle_phase
+            )
+        )
+
+
+        py += (
+
+            0.030
+
+            * np.cos(
+                animation_time
+
+                * particle_speed
+
+                + particle_phase
+            )
+        )
+
+
+        particles.set_offsets(
+            np.column_stack(
+                [
+                    px,
+                    py
+                ]
+            )
+        )
+
+
+        # ====================================================
+        # PARTICLE COLOR
+        # ====================================================
+
+        particle_rgba = np.zeros(
+            (
+                N_PARTICLES,
+                4
+            )
+        )
+
+
+        particle_rgba[:, :3] = np.clip(
+
+            base_color[None, :]
+
+            * (
+                0.80
+
+                + 0.35
+
+                * particle_brightness[
+                    :,
+                    None
+                ]
             ),
-            linewidth=0.5
+
+            0,
+            1
         )
 
 
-    # --------------------------------------------------------
-    # OUTER SILHOUETTE
-    # --------------------------------------------------------
+        particle_rgba[:, 3] = (
 
-    theta, x, y = reef_geometry(
-        stress,
-        pacific,
-        atlantic,
-        indian,
-        1.0,
-        motion
-    )
+            (
+                0.20
 
-    # Again use segments for local bleaching
-    local_stress = local_colour(
-        theta,
-        stress,
-        0
-    )
+                + 0.34
 
-    chunk = 10
+                * current_stress
+            )
 
-    for start in range(
-        0,
-        len(theta) - chunk,
-        chunk
-    ):
-
-        end = start + chunk + 1
-
-        s = np.mean(
-            local_stress[start:end]
-        )
-
-        ax.plot(
-            x[start:end],
-            y[start:end],
-            color=bleaching_colour(s),
-            alpha=0.9,
-            linewidth=1.6,
-            solid_capstyle="round"
+            * particle_brightness
         )
 
 
-# ============================================================
-# 11. LOAD NOAA DATA
-# ============================================================
-
-(
-    raw_years,
-    raw_global,
-    raw_pacific,
-    raw_atlantic,
-    raw_indian,
-) = read_data(DATA)
-
-
-if len(raw_years) == 0:
-
-    raise RuntimeError(
-        "No NOAA data could be read."
-    )
-
-
-years, global_year = yearly_average(
-    raw_years,
-    raw_global
-)
-
-_, pacific_year = yearly_average(
-    raw_years,
-    raw_pacific
-)
-
-_, atlantic_year = yearly_average(
-    raw_years,
-    raw_atlantic
-)
-
-_, indian_year = yearly_average(
-    raw_years,
-    raw_indian
-)
-
-
-global_norm = normalize(
-    global_year
-)
-
-pacific_norm = normalize(
-    pacific_year
-)
-
-atlantic_norm = normalize(
-    atlantic_year
-)
-
-indian_norm = normalize(
-    indian_year
-)
-
-
-# ============================================================
-# 12. ANIMATION SETTINGS
-# ============================================================
-
-# Number of transition frames BETWEEN years.
-#
-# 24 means:
-# 1986 -> 1987 is not one jump.
-# It contains 24 intermediate states.
-
-TRANSITION_FRAMES = 24
-
-total_frames = (
-    (len(years) - 1)
-    * TRANSITION_FRAMES
-)
-
-
-# ============================================================
-# 13. FIGURE
-# ============================================================
-
-fig, ax = plt.subplots(
-    figsize=(14, 9),
-    facecolor=BG
-)
-
-fig.canvas.manager.set_window_title(
-    "A Reef Losing Its Color"
-)
-
-
-# ============================================================
-# 14. ANIMATION UPDATE
-# ============================================================
-
-def update(frame):
-
-    ax.clear()
-    ax.set_facecolor(BG)
-
-    # --------------------------------------------------------
-    # WHICH TWO YEARS ARE WE BETWEEN?
-    # --------------------------------------------------------
-
-    year_index = (
-        frame
-        // TRANSITION_FRAMES
-    )
-
-    transition_frame = (
-        frame
-        % TRANSITION_FRAMES
-    )
-
-    raw_t = (
-        transition_frame
-        / TRANSITION_FRAMES
-    )
-
-    t = ease(raw_t)
-
-    next_index = min(
-        year_index + 1,
-        len(years) - 1
-    )
-
-
-    # --------------------------------------------------------
-    # INTERPOLATE NOAA DATA
-    # --------------------------------------------------------
-
-    stress = mix(
-        global_norm[year_index],
-        global_norm[next_index],
-        t
-    )
-
-    pacific = mix(
-        pacific_norm[year_index],
-        pacific_norm[next_index],
-        t
-    )
-
-    atlantic = mix(
-        atlantic_norm[year_index],
-        atlantic_norm[next_index],
-        t
-    )
-
-    indian = mix(
-        indian_norm[year_index],
-        indian_norm[next_index],
-        t
-    )
-
-    global_display = mix(
-        global_year[year_index],
-        global_year[next_index],
-        t
-    )
-
-    pacific_display = mix(
-        pacific_year[year_index],
-        pacific_year[next_index],
-        t
-    )
-
-    atlantic_display = mix(
-        atlantic_year[year_index],
-        atlantic_year[next_index],
-        t
-    )
-
-    indian_display = mix(
-        indian_year[year_index],
-        indian_year[next_index],
-        t
-    )
-
-
-    # --------------------------------------------------------
-    # CURRENT YEAR DISPLAY
-    # --------------------------------------------------------
-
-    display_year = mix(
-        years[year_index],
-        years[next_index],
-        t
-    )
-
-
-    # --------------------------------------------------------
-    # TITLE
-    # --------------------------------------------------------
-
-    ax.text(
-        0.05,
-        0.94,
-        "A REEF LOSING ITS COLOR",
-        transform=ax.transAxes,
-        fontsize=25,
-        fontweight="bold",
-        color="#f5f1e8",
-        va="top"
-    )
-
-    ax.text(
-        0.05,
-        0.885,
-        "NOAA Coral Reef Watch · Global Bleaching Heat Stress",
-        transform=ax.transAxes,
-        fontsize=10,
-        color="#8ba0a7"
-    )
-
-
-    # --------------------------------------------------------
-    # DRAW REEF
-    # --------------------------------------------------------
-
-    draw_reef(
-        ax,
-        stress,
-        pacific,
-        atlantic,
-        indian,
-        frame * 0.018
-    )
-
-
-    # --------------------------------------------------------
-    # YEAR
-    # --------------------------------------------------------
-
-    ax.text(
-        0.92,
-        0.92,
-        f"{display_year:.1f}",
-        transform=ax.transAxes,
-        fontsize=27,
-        fontweight="bold",
-        color="#f5f1e8",
-        ha="right"
-    )
-
-
-    # --------------------------------------------------------
-    # CURRENT DATA
-    # --------------------------------------------------------
-
-    ax.text(
-        0.92,
-        0.84,
-        f"GLOBAL     {global_display:.3f} %",
-        transform=ax.transAxes,
-        fontsize=9,
-        color=bleaching_colour(stress),
-        ha="right"
-    )
-
-    ax.text(
-        0.92,
-        0.805,
-        f"PACIFIC    {pacific_display:.3f} %",
-        transform=ax.transAxes,
-        fontsize=8,
-        color="#91a5ab",
-        ha="right"
-    )
-
-    ax.text(
-        0.92,
-        0.775,
-        f"ATLANTIC   {atlantic_display:.3f} %",
-        transform=ax.transAxes,
-        fontsize=8,
-        color="#91a5ab",
-        ha="right"
-    )
-
-    ax.text(
-        0.92,
-        0.745,
-        f"INDIAN     {indian_display:.3f} %",
-        transform=ax.transAxes,
-        fontsize=8,
-        color="#91a5ab",
-        ha="right"
-    )
-
-
-    # --------------------------------------------------------
-    # VISUAL KEY
-    # --------------------------------------------------------
-
-    ax.text(
-        0.05,
-        0.16,
-        "GLOBAL %",
-        transform=ax.transAxes,
-        fontsize=8,
-        fontweight="bold",
-        color="#f5f1e8"
-    )
-
-    ax.text(
-        0.05,
-        0.13,
-        "bleaching · density · contraction",
-        transform=ax.transAxes,
-        fontsize=8,
-        color="#82969c"
-    )
-
-    ax.text(
-        0.32,
-        0.16,
-        "PACIFIC · ATLANTIC · INDIAN",
-        transform=ax.transAxes,
-        fontsize=8,
-        fontweight="bold",
-        color="#f5f1e8"
-    )
-
-    ax.text(
-        0.32,
-        0.13,
-        "large · medium · fine folds",
-        transform=ax.transAxes,
-        fontsize=8,
-        color="#82969c"
-    )
-
-
-    # --------------------------------------------------------
-    # TIMELINE
-    # --------------------------------------------------------
-
-    x1 = 0.05
-    x2 = 0.95
-    line_y = 0.07
-
-    ax.plot(
-        [x1, x2],
-        [line_y, line_y],
-        transform=ax.transAxes,
-        color="#70868d",
-        linewidth=0.8,
-        alpha=0.5
-    )
-
-    progress = (
-        frame
-        / max(
-            1,
-            total_frames - 1
+        particles.set_facecolors(
+            particle_rgba
         )
+
+
+        particles.set_sizes(
+
+            particle_size
+
+            * (
+                0.90
+
+                + 1.25
+
+                * current_stress
+            )
+        )
+
+
+        # ====================================================
+        # TEXT
+        # ====================================================
+
+        year_text.set_text(
+            f"{int(round(current_year))}"
+        )
+
+
+        stress_text.set_text(
+
+            "GLOBAL HEAT STRESS   "
+
+            f"{current_raw:.3f} %"
+        )
+
+
+        stress_text.set_color(
+            np.clip(
+                base_color * 1.08,
+                0,
+                1
+            )
+        )
+
+
+        # ====================================================
+        # TIMELINE
+        # ====================================================
+
+        progress = (
+
+            current_year
+            -
+            START_YEAR
+
+        ) / (
+
+            END_YEAR
+            -
+            START_YEAR
+        )
+
+
+        dot_x = (
+
+            0.045
+
+            + progress
+
+            * 0.91
+        )
+
+
+        timeline_dot.set_data(
+            [dot_x],
+            [timeline_y]
+        )
+
+
+        timeline_dot.set_color(
+            base_color
+        )
+
+
+        return (
+            fibre_collection,
+            outer,
+            glow,
+            particles,
+            year_text,
+            stress_text,
+            timeline_dot
+        )
+
+
+    # ========================================================
+    # ANIMATION
+    # ========================================================
+
+    animation = FuncAnimation(
+        fig,
+        update,
+        frames=FRAMES,
+        interval=1000 / FPS,
+        blit=False,
+        repeat=True,
+        cache_frame_data=False
     )
 
-    current_x = (
-        x1
-        + progress
-        * (x2 - x1)
-    )
 
-    ax.scatter(
-        current_x,
-        line_y,
-        transform=ax.transAxes,
-        s=40,
-        color=bleaching_colour(stress),
-        edgecolors="none",
-        zorder=20
-    )
-
-    ax.text(
-        x1,
-        0.04,
-        str(years[0]),
-        transform=ax.transAxes,
-        fontsize=8,
-        color="#82969c"
-    )
-
-    ax.text(
-        x2,
-        0.04,
-        str(years[-1]),
-        transform=ax.transAxes,
-        fontsize=8,
-        color="#82969c",
-        ha="right"
-    )
-
-
-    # --------------------------------------------------------
-    # CANVAS
-    # --------------------------------------------------------
-
-    ax.set_xlim(
-        -1.55,
-        1.55
-    )
-
-    ax.set_ylim(
-        -1.12,
-        1.12
-    )
-
-    ax.set_aspect(
-        "equal"
-    )
-
-    ax.axis(
-        "off"
-    )
+    plt.show()
 
 
 # ============================================================
-# 15. PLAY
+# RUN
 # ============================================================
 
-animation = FuncAnimation(
-    fig,
-    update,
-    frames=total_frames,
-    interval=40,
-    repeat=True,
-    cache_frame_data=False
-)
-
-plt.tight_layout()
-
-plt.show()
+if __name__ == "__main__":
+    main()
