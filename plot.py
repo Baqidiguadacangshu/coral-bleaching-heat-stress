@@ -1701,9 +1701,22 @@ def main():
         repeat=True,
         cache_frame_data=False
     )
+    gif_path = "out/coral-bleaching-animation.gif"
 
+    print("Rendering NEW GIF...")
 
+    animation.save(
+        gif_path,
+        writer="pillow",
+        fps=FPS,
+        dpi=80
+    )
+
+    print(f"Saved NEW GIF to: {gif_path}")
+
+    plt.tight_layout()
     plt.show()
+
 
 
 # ============================================================
