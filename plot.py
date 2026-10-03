@@ -1,3 +1,9 @@
+# /// script
+# dependencies = [
+#   "numpy",
+#   "matplotlib",
+# ]
+# ///
 from pathlib import Path
 import csv
 import numpy as np
